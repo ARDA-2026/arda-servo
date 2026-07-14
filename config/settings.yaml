@@ -1,0 +1,12 @@
+udp:
+  host: "0.0.0.0"
+  port: 9999
+  timeout: 0.5      # 초 — recv() 논블로킹 폴링 주기
+
+servo:
+  gpio_pin: 33          # Jetson 40핀 헤더 물리 핀 번호 (BOARD 모드, PWM 지원 핀)
+  min_deg: 0.0
+  max_deg: 180.0
+  center_deg: 90.0      # 레이더 정면(azimuth=0)에 대응하는 서보 각도
+  invert: false          # 배선/장착 방향에 따라 좌우가 반대로 움직이면 true로 변경
+  stale_timeout: 2.0    # 초 — 이 시간 이상 좌표 미수신 시 경고 로그(각도는 마지막 값 유지)
