@@ -35,3 +35,24 @@ def test_clamped_to_min_deg():
 def test_nonpositive_y_does_not_raise():
     angle = xyz_to_pan_angle(x=1.0, y=0.0)
     assert 0.0 <= angle <= 180.0
+
+
+def test_offset_zero_matches_no_offset():
+    with_zero_offset = xyz_to_pan_angle(x=0.5, y=1.0, offset_x=0.0, offset_y=0.0)
+    without_offset = xyz_to_pan_angle(x=0.5, y=1.0)
+    assert with_zero_offset == without_offset
+
+
+def test_offset_x_recenters_target_directly_ahead_of_servo():
+    # 서보가 레이더보다 우측 0.5m에 설치됨 → 타겟이 레이더 기준 x=0.5에 있으면
+    # 서보 입장에서는 정면(0도 오프셋)에 있는 것과 같다
+    angle = xyz_to_pan_angle(x=0.5, y=1.0, offset_x=0.5, offset_y=0.0)
+    assert angle == 90.0
+
+
+def test_offset_y_shifts_azimuth():
+    baseline = xyz_to_pan_angle(x=1.0, y=2.0)
+    with_offset = xyz_to_pan_angle(x=1.0, y=2.0, offset_y=1.0)
+    # 서보가 레이더보다 앞쪽에 있으면 타겟까지의 상대 거리가 줄어들어
+    # 같은 좌우 편차라도 각도가 더 커진다
+    assert with_offset > baseline

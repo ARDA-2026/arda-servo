@@ -43,11 +43,24 @@ def main() -> None:
         simulate=args.simulate,
     )
 
+    offset_cfg = cfg.get("mount_offset", {})
+    offset_x = offset_cfg.get("x", 0.0)
+    offset_y = offset_cfg.get("y", 0.0)
+    offset_z = offset_cfg.get("z", 0.0)
+    if offset_z:
+        logger.info(
+            "mount_offset.z=%.2fm 설정됨 — 팬(pan) 각도 계산에는 미반영 "
+            "(높이 차이는 좌우 회전에 영향 없음, tilt 축 추가 시 사용 예정)",
+            offset_z,
+        )
+
     if args.manual:
         controller = ServoController(
             servo,
             center_deg=servo_cfg.get("center_deg", 90.0),
             invert=servo_cfg.get("invert", False),
+            offset_x=offset_x,
+            offset_y=offset_y,
         )
         controller.run_manual()
         return
@@ -64,6 +77,8 @@ def main() -> None:
         center_deg=servo_cfg.get("center_deg", 90.0),
         invert=servo_cfg.get("invert", False),
         stale_timeout=servo_cfg.get("stale_timeout", 2.0),
+        offset_x=offset_x,
+        offset_y=offset_y,
     )
 
     logger.info("ARDA Servo 시작 — UDP %s:%d 수신 대기", udp_cfg["host"], udp_cfg["port"])

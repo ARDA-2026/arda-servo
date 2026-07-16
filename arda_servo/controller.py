@@ -18,12 +18,16 @@ class ServoController:
         center_deg: float = 90.0,
         invert: bool = False,
         stale_timeout: float = 2.0,
+        offset_x: float = 0.0,
+        offset_y: float = 0.0,
     ):
         self._servo = servo
         self._receiver = receiver
         self._center_deg = center_deg
         self._invert = invert
         self._stale_timeout = stale_timeout
+        self._offset_x = offset_x
+        self._offset_y = offset_y
         self._last_update = 0.0
         self._stale_logged = False
 
@@ -78,6 +82,8 @@ class ServoController:
                     min_deg=self._servo.min_deg,
                     max_deg=self._servo.max_deg,
                     invert=self._invert,
+                    offset_x=self._offset_x,
+                    offset_y=self._offset_y,
                 )
                 self._servo.set_angle(angle)
                 print(f"→ angle = {angle:.1f}°")
@@ -99,6 +105,8 @@ class ServoController:
                 min_deg=self._servo.min_deg,
                 max_deg=self._servo.max_deg,
                 invert=self._invert,
+                offset_x=self._offset_x,
+                offset_y=self._offset_y,
             )
             self._servo.set_angle(angle)
             self._last_update = now
