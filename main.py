@@ -76,9 +76,9 @@ def main() -> None:
         receiver,
         center_deg=servo_cfg.get("center_deg", 90.0),
         invert=servo_cfg.get("invert", False),
-        stale_timeout=servo_cfg.get("stale_timeout", 2.0),
         offset_x=offset_x,
         offset_y=offset_y,
+        dwell_seconds=servo_cfg.get("dwell_seconds", 3.0),
     )
 
     logger.info("ARDA Servo 시작 — UDP %s:%d 수신 대기", udp_cfg["host"], udp_cfg["port"])
