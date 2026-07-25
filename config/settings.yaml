@@ -11,7 +11,7 @@ servo:
                          # 레이더 정면(azimuth=0)에 대응하는 서보 각도.
                          # 시작 시 이 각도로 이동해 대기한다.
   invert: false          # 배선/장착 방향에 따라 좌우가 반대로 움직이면 true로 변경
-  dwell_seconds: 3.0    # 낙하(fall=true) 좌표 수신 시 그 각도에서 정지해 있을 시간(초),
+  dwell_seconds: 10.0    # 낙하(fall=true) 좌표 수신 시 그 각도에서 정지해 있을 시간(초),
                          # 이후 자동으로 홈 포지션(center_deg)에 복귀한다.
                          # 열화상(arda-thermal-test) 판정 시간을 벌어주는 용도 —
                          # 열화상 쪽 dwell-seconds와 비슷하거나 살짝 길게 맞춘다. 0이면 비활성화.
