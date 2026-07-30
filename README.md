@@ -29,6 +29,30 @@ arda-radar (센서 읽기 → 낙하 감지) --UDP JSON--> arda-servo (좌표 �
 5. dwell이 끝나면 자동으로 홈 포지션(`center_deg`)에 복귀해 다음 낙하를
    기다린다.
 
+### 열화상 추적 보정 (선택)
+
+카메라가 서보에 고정 장착되어 있으므로, dwell 중(4단계) 열화상
+(`arda-thermal-test`)이 발열 영역을 계속 감지하면 그 방향으로 서보를 더
+움직여 계속 따라갈 수 있다. `arda-thermal-test`는 프레임 중심 대비 발열
+위치를 정규화된 값(`offset`, -1.0~1.0)으로 `{"offset", "ts"}` JSON을
+UDP로 보내고(기본 `127.0.0.1:9996`), `arda-servo`는 dwell 중에만 이를
+받아 `현재 각도 + offset × thermal_udp.pan_gain_deg`로 각도를 갱신하면서
+dwell을 매번 `dwell_seconds`만큼 연장한다. 보정이 더 이상 오지 않으면
+(열원을 놓쳤거나 관찰이 끝나면) dwell이 자연히 만료되어 홈으로 복귀한다.
+홈 포지션에서 대기 중일 때는 이 보정을 받지 않는다 — 레이더 트리거 없이
+임의의 열원에 반응하지 않기 위해서다. `config/settings.yaml`의
+`thermal_udp` 섹션을 통째로 지우면 이 기능은 비활성화되고 기존 동작만
+남는다.
+
+발열 영역이 사람 모양으로 확정되면 `arda-thermal-test`가
+`{"confirmed": true, "vertical_offset"}`를 보낸다. `vertical_offset`은
+프레임 세로 중심 대비 편차(-1.0 화면 위 ~ 1.0 화면 아래)로, `config/settings.yaml`의
+`camera_geometry`(설치 높이·기울기·수직 화각)가 모두 설정돼 있으면 "카메라는
+z=0 평면(지면/수면)을 보고 있다"는 가정으로 거리를 다시 계산해 좌우뿐 아니라
+거리까지 반영된 최종 좌표를 로그로 남긴다. `camera_geometry`가 없거나
+`vertical_offset`이 안 오면 레이더가 처음 잰 거리를 그대로 쓰고 방향만
+갱신한다.
+
 좌표계는 레이더 ROI 기준: `x`는 좌우(+가 우측, m), `y`는 센서 정면 거리(m).
 `z`(높이)는 현재 팬 1축 제어에는 사용하지 않는다 — 상하(tilt) 축을
 추가하면 `z`를 elevation 계산에 활용할 수 있다.
@@ -122,6 +146,12 @@ uv run python main.py
 | `servo.center_deg` | 홈 포지션(평소 대기 각도)이자 레이더 정면(azimuth 0°)에 대응하는 서보 각도. 시작 시와 dwell 종료 후 이 각도로 이동한다 |
 | `servo.invert` | 배선/장착 방향 때문에 좌우가 반대로 움직이면 `true` |
 | `servo.dwell_seconds` | 낙하(`fall=true`) 좌표 수신 시 그 각도에서 정지할 시간(초), 이후 자동으로 홈 포지션 복귀. 0이면 정지 없이 즉시 복귀 |
+| `thermal_udp.host` / `port` | 열화상 추적 보정 수신 UDP 바인드 주소 (기본 `0.0.0.0:9996`). 섹션을 지우면 기능 비활성화 |
+| `thermal_udp.pan_gain_deg` | 보정 1건(`offset` -1.0~1.0)당 최대 회전 각도(도) |
+| `camera_geometry.radar_height_m` | 레이더 설치 높이(z=0 기준, m). `arda-radar`의 `site.z`와 같은 값으로 수동으로 맞춰둘 것 |
+| `camera_geometry.height_offset_from_radar_m` | 카메라가 레이더보다 높은/낮은 정도(m, 낮으면 음수). 카메라 높이 = `radar_height_m` + 이 값 |
+| `camera_geometry.tilt_deg` | 수평 기준 아래로 기울어진 각도(도) — 정지 상태(프레임 세로 중심)의 앙각 |
+| `camera_geometry.vertical_fov_deg` | 열화상 센서의 수직 화각(도) — 사람 확정 시 거리 역산에 사용, 섹션을 지우면 레이더 원거리를 그대로 씀 |
 
 ## 테스트
 

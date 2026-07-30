@@ -8,6 +8,7 @@ import yaml
 from arda_servo.controller import ServoController
 from arda_servo.receiver import CoordReceiver
 from arda_servo.servo import PanServo
+from arda_servo.thermal_receiver import ThermalPanReceiver
 from arda_servo.utils import get_logger
 
 logger = get_logger(__name__)
@@ -71,6 +72,36 @@ def main() -> None:
         port=udp_cfg["port"],
         timeout=udp_cfg.get("timeout", 0.5),
     )
+
+    thermal_cfg = cfg.get("thermal_udp")
+    thermal_receiver = None
+    if thermal_cfg:
+        thermal_receiver = ThermalPanReceiver(
+            host=thermal_cfg.get("host", "0.0.0.0"),
+            port=thermal_cfg.get("port", 9996),
+            timeout=thermal_cfg.get("timeout", 0.01),
+        )
+        logger.info(
+            "열화상 추적 보정 수신 활성화 — UDP %s:%d (gain=%.1f°)",
+            thermal_cfg.get("host", "0.0.0.0"), thermal_cfg.get("port", 9996),
+            thermal_cfg.get("pan_gain_deg", 8.0),
+        )
+
+    geometry_cfg = cfg.get("camera_geometry")
+    install_height_m = camera_tilt_deg = vertical_fov_deg = None
+    if geometry_cfg:
+        radar_height_m = geometry_cfg.get("radar_height_m")
+        height_offset_from_radar_m = geometry_cfg.get("height_offset_from_radar_m", 0.0)
+        install_height_m = radar_height_m + height_offset_from_radar_m
+        camera_tilt_deg = geometry_cfg.get("tilt_deg")
+        vertical_fov_deg = geometry_cfg.get("vertical_fov_deg")
+        logger.info(
+            "카메라 설치 기하 활성화 — 레이더 높이=%.2fm %+.2fm → 카메라 높이=%.2fm, "
+            "기울기=%.1f°, 수직화각=%.1f° (사람 확정 시 z=0 평면 기준 거리 역산에 사용)",
+            radar_height_m, height_offset_from_radar_m, install_height_m,
+            camera_tilt_deg, vertical_fov_deg,
+        )
+
     controller = ServoController(
         servo,
         receiver,
@@ -79,6 +110,11 @@ def main() -> None:
         offset_x=offset_x,
         offset_y=offset_y,
         dwell_seconds=servo_cfg.get("dwell_seconds", 10.0),
+        thermal_receiver=thermal_receiver,
+        thermal_pan_gain_deg=thermal_cfg.get("pan_gain_deg", 8.0) if thermal_cfg else 8.0,
+        install_height_m=install_height_m,
+        camera_tilt_deg=camera_tilt_deg,
+        vertical_fov_deg=vertical_fov_deg,
     )
 
     logger.info("ARDA Servo 시작 — UDP %s:%d 수신 대기", udp_cfg["host"], udp_cfg["port"])
