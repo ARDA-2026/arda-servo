@@ -5,6 +5,7 @@ from arda_servo.angle import elevation_range, pan_angle_to_xyz
 from arda_servo.controller import ServoController
 from arda_servo.receiver import Coord
 from arda_servo.servo import PanServo
+from arda_servo.site import local_to_latlon
 from arda_servo.thermal_receiver import ThermalPan
 
 
@@ -157,6 +158,59 @@ def test_thermal_pan_applied_and_extends_dwell_during_tracking():
 
     assert servo.angle == 140.0
     assert controller._dwell_until == 104.0  # 101.0 + dwell_seconds(3.0)로 연장됨
+
+
+def test_thermal_pan_with_vertical_offset_logs_position_every_frame(caplog):
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0)])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.5, ts=0.0, vertical_offset=0.2),
+        ThermalPan(offset=-0.3, ts=0.0, vertical_offset=0.6),
+    ])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=3.0,
+        thermal_receiver=thermal, thermal_pan_gain_deg=10.0,
+        install_height_m=1.3, camera_tilt_deg=50.0, vertical_fov_deg=35.0,
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()  # 낙하 좌표 → dwell 시작
+
+    with caplog.at_level("INFO"):
+        with patch("arda_servo.controller.time.time", return_value=101.0):
+            controller.step()  # 1차 보정 — vertical_offset=0.2로 거리 역산
+
+        with patch("arda_servo.controller.time.time", return_value=102.0):
+            controller.step()  # 2차 보정 — vertical_offset=0.6, 다른 거리로 다시 역산
+
+    range_1 = elevation_range(0.2, 1.3, 50.0, 35.0)
+    range_2 = elevation_range(0.6, 1.3, 50.0, 35.0)
+    assert range_1 != range_2  # 프레임마다 다른 세로 위치로 거리가 매번 다시 계산돼야 함
+    assert f"거리 {range_1:.2f}m" in caplog.text
+    assert f"거리 {range_2:.2f}m" in caplog.text
+    assert caplog.text.count("z=0 평면 기준") == 2  # 매 보정마다 역산 로그가 남아야 함
+
+
+def test_thermal_pan_without_dwell_start_coord_skips_position_log(caplog):
+    # _dwell_start_coord가 없는 경우(run_manual 등)에도 보정 자체는 정상 적용되고
+    # 위치 로그만 생략돼야 한다.
+    servo = PanServo(pin=33, simulate=True)
+    controller = ServoController(
+        servo, center_deg=90.0, dwell_seconds=3.0,
+        install_height_m=1.3, camera_tilt_deg=50.0, vertical_fov_deg=35.0,
+    )
+    controller._dwell_until = 999999.0  # dwell 중인 것처럼 강제로 만듦 (_dwell_start_coord는 None으로 둠)
+    thermal = FakeThermalReceiver([ThermalPan(offset=0.5, ts=0.0, vertical_offset=0.2)])
+    controller._thermal_receiver = thermal
+    controller._receiver = FakeReceiver([])
+
+    with caplog.at_level("INFO"):
+        with patch("arda_servo.controller.time.time", return_value=0.0):
+            controller.step()
+
+    assert "현재" not in caplog.text
+    assert servo.angle == 94.0  # center_deg(90.0) + offset=0.5 * gain(기본 8.0) 만큼은 정상 반영됨
 
 
 def test_thermal_pan_ignored_when_idle_at_home():
@@ -320,6 +374,53 @@ def test_thermal_confirmed_without_vertical_offset_falls_back_to_radar_range(cap
     radar_range = math.hypot(1.0, 1.0)
     assert f"거리 {radar_range:.2f}m" in caplog.text
     assert "레이더 원거리 유지" in caplog.text
+
+
+def test_thermal_confirmed_with_site_config_logs_latlon_instead_of_local_xy(caplog):
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([Coord(x=2.0, y=3.0, z=0.0, fall=True, ts=0.0)])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.0, ts=0.0, confirmed=True),
+    ])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal,
+        site_lat=37.5, site_lon=127.0, site_heading_deg=0.0,
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()
+
+    with caplog.at_level("WARNING"):
+        with patch("arda_servo.controller.time.time", return_value=101.0):
+            controller.step()
+
+    orig_lat, orig_lon = local_to_latlon(2.0, 3.0, 37.5, 127.0, 0.0)
+    assert f"lat={orig_lat:.6f} lon={orig_lon:.6f}" in caplog.text
+    assert "x=2.00 y=3.00" not in caplog.text  # 로컬 좌표가 아니라 위경도로 남아야 함
+
+
+def test_thermal_confirmed_without_site_config_falls_back_to_local_xy(caplog):
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([Coord(x=2.0, y=3.0, z=0.0, fall=True, ts=0.0)])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.0, ts=0.0, confirmed=True),
+    ])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0, thermal_receiver=thermal,
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()
+
+    with caplog.at_level("WARNING"):
+        with patch("arda_servo.controller.time.time", return_value=101.0):
+            controller.step()
+
+    assert "레이더 원좌표 x=2.00 y=3.00" in caplog.text
+    assert "lat=" not in caplog.text
 
 
 def test_run_forever_closes_thermal_receiver():

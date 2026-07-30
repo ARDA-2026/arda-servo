@@ -6,6 +6,7 @@ import time
 from .angle import elevation_range, pan_angle_to_xyz, xyz_to_pan_angle
 from .receiver import Coord, CoordReceiver
 from .servo import PanServo
+from .site import local_to_latlon
 from .thermal_receiver import ThermalPan, ThermalPanReceiver
 from .utils import get_logger
 
@@ -28,6 +29,12 @@ class ServoController:
     홈으로 복귀한다. 홈에서 대기 중일 때는 열화상 보정을 받지 않는다 —
     레이더 트리거 없이 임의의 열원에 반응해 움직이지 않기 위함이다.
 
+    보정에 `vertical_offset`(프레임 세로 편차)이 함께 오고 카메라 설치
+    정보(`install_height_m`/`camera_tilt_deg`/`vertical_fov_deg`)가 갖춰져
+    있으면, dwell 추적 중 매 보정마다 거리·좌표를 다시 계산해 로그로 남긴다
+    — 확정 순간 한 번만이 아니라 서보가 움직이는 동안 계속 위치를 갱신해서
+    보여주기 위함이다.
+
     열화상이 사람 매칭에 계속 실패해 명시적으로 포기 신호(`give_up`)를
     보내면, dwell 만료를 기다리지 않고 그 즉시 홈으로 복귀하고 레이더
     좌표를 다시 받아들인다 — 자체 dwell 타이머만으로는 마지막 보정
@@ -42,6 +49,15 @@ class ServoController:
     새로 역산한다 — 사람이 좌우뿐 아니라 앞뒤로도 움직였을 가능성을 반영한
     값이다. 이 정보가 없으면 레이더 원좌표의 거리를 그대로 쓰고 방향만
     최종 각도로 바꾼다(이전 방식으로 대체).
+
+    `site_lat`/`site_lon`이 주어지면(arda-radar가 site.x/y/z 대신
+    site.lat/lon/heading_deg로 낙하 위치를 GPS로 보고하는 방식과 맞추기
+    위함) 이 로그의 좌표를 로컬 미터가 아니라 `local_to_latlon()`으로 변환한
+    위도/경도로 남긴다. 레이더 원좌표와 열화상 추적 후 좌표 모두 이미
+    "레이더 로컬 좌표계" 기준이므로(둘 다 `offset_x`/`offset_y` 보정이 끝난
+    뒤의 값), 같은 `site_lat`/`site_lon`/`site_heading_deg`로 변환하면
+    arda-radar의 GPS 로그와 그대로 비교할 수 있다. 주어지지 않으면 기존처럼
+    로컬 좌표(m)로 남긴다.
     """
 
     def __init__(
@@ -58,6 +74,9 @@ class ServoController:
         install_height_m: float | None = None,
         camera_tilt_deg: float | None = None,
         vertical_fov_deg: float | None = None,
+        site_lat: float | None = None,
+        site_lon: float | None = None,
+        site_heading_deg: float = 0.0,
     ):
         self._servo = servo
         self._receiver = receiver
@@ -72,6 +91,9 @@ class ServoController:
         self._install_height_m = install_height_m
         self._camera_tilt_deg = camera_tilt_deg
         self._vertical_fov_deg = vertical_fov_deg
+        self._site_lat = site_lat
+        self._site_lon = site_lon
+        self._site_heading_deg = site_heading_deg
         # 현재 dwell을 시작시킨 레이더 원좌표 — 열화상이 confirmed를 보낼 때
         # 최종 각도(및 가능하면 거리)를 좌표로 역산해 이 값과 비교 로그를
         # 남기기 위함.
@@ -157,10 +179,21 @@ class ServoController:
             elif pan is not None:
                 self._apply_thermal_pan(pan.offset)
                 self._dwell_until = now + self._dwell_seconds
-                logger.info(
-                    "열화상 보정 반영 — offset=%.2f → angle=%.1f°, 추적 연장",
-                    pan.offset, self._servo.angle,
-                )
+
+                coord = self._dwell_start_coord
+                if coord is not None:
+                    range_m, range_note = self._resolve_range(coord, pan.vertical_offset)
+                    position = self._describe_position(self._servo.angle, range_m)
+                    logger.info(
+                        "열화상 보정 반영 — offset=%.2f → angle=%.1f°, 추적 연장 | "
+                        "현재 %s (거리 %.2fm, %s)",
+                        pan.offset, self._servo.angle, position, range_m, range_note,
+                    )
+                else:
+                    logger.info(
+                        "열화상 보정 반영 — offset=%.2f → angle=%.1f°, 추적 연장",
+                        pan.offset, self._servo.angle,
+                    )
             elif coord is not None:
                 logger.debug("dwell 중 — 좌표 무시 (남은 %.1fs)", self._dwell_until - now)
             return
@@ -216,19 +249,15 @@ class ServoController:
         if pan.confirmed:
             coord = self._dwell_start_coord
             if coord is not None:
-                range_m, range_note = self._resolve_final_range(coord, pan.vertical_offset)
-                final_x, final_y = pan_angle_to_xyz(
-                    final_angle,
-                    range_m,
-                    center_deg=self._center_deg,
-                    invert=self._invert,
-                    offset_x=self._offset_x,
-                    offset_y=self._offset_y,
-                )
+                range_m, range_note = self._resolve_range(coord, pan.vertical_offset)
+                orig_position = self._describe_xy(coord.x, coord.y)
+                final_position = self._describe_position(final_angle, range_m)
+                position_word = "위치" if self._site_lat is not None else "좌표"
                 logger.warning(
-                    "열화상 사람 확정 — 레이더 원좌표 x=%.2f y=%.2f → 열화상 추적 후 좌표 x=%.2f y=%.2f "
+                    "열화상 사람 확정 — 레이더 원%s %s → 열화상 추적 후 %s %s "
                     "(거리 %.2fm, %s) → 홈(%.1f°) 복귀",
-                    coord.x, coord.y, final_x, final_y, range_m, range_note, self._center_deg,
+                    position_word, orig_position, position_word, final_position,
+                    range_m, range_note, self._center_deg,
                 )
             else:
                 logger.warning(
@@ -243,9 +272,10 @@ class ServoController:
 
         self._dwell_start_coord = None
 
-    def _resolve_final_range(self, coord: Coord, vertical_offset: float | None) -> tuple[float, str]:
-        """확정 시점의 거리를 구함. 가능하면 카메라 설치 정보로 z=0 기준 역산하고,
-        정보가 부족하면 레이더 원좌표의 거리를 그대로 쓴다. (거리, 설명) 반환."""
+    def _resolve_range(self, coord: Coord, vertical_offset: float | None) -> tuple[float, str]:
+        """현재 거리를 구함. 가능하면 카메라 설치 정보로 z=0 기준 역산하고,
+        정보가 부족하면 레이더 원좌표의 거리를 그대로 쓴다. (거리, 설명) 반환.
+        확정 시점뿐 아니라 dwell 추적 중 매 보정마다도 호출된다."""
         geometry_ready = (
             self._install_height_m is not None
             and self._camera_tilt_deg is not None
@@ -264,3 +294,19 @@ class ServoController:
         except ValueError as e:
             logger.warning("거리 역산 실패(%s) — 레이더 원거리로 대체", e)
             return radar_range_m, "레이더 원거리로 대체"
+
+    def _describe_xy(self, x: float, y: float) -> str:
+        """로컬 (x, y)를 site 설정이 있으면 위경도, 없으면 로컬 좌표 문자열로 변환함."""
+        if self._site_lat is not None and self._site_lon is not None:
+            lat, lon = local_to_latlon(x, y, self._site_lat, self._site_lon, self._site_heading_deg)
+            return f"lat={lat:.6f} lon={lon:.6f}"
+        return f"x={x:.2f} y={y:.2f}"
+
+    def _describe_position(self, angle: float, range_m: float) -> str:
+        """서보 각도·거리로 좌표를 구해 _describe_xy()로 문자열화함."""
+        x, y = pan_angle_to_xyz(
+            angle, range_m,
+            center_deg=self._center_deg, invert=self._invert,
+            offset_x=self._offset_x, offset_y=self._offset_y,
+        )
+        return self._describe_xy(x, y)

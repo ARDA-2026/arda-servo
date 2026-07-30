@@ -102,6 +102,19 @@ def main() -> None:
             camera_tilt_deg, vertical_fov_deg,
         )
 
+    site_cfg = cfg.get("site")
+    site_lat = site_lon = None
+    site_heading_deg = 0.0
+    if site_cfg:
+        site_lat = site_cfg.get("lat")
+        site_lon = site_cfg.get("lon")
+        site_heading_deg = site_cfg.get("heading_deg", 0.0)
+        logger.info(
+            "GPS 좌표 변환 활성화 — site lat=%.6f lon=%.6f heading=%.1f° "
+            "(사람 확정 시 위경도로 로그에 남김)",
+            site_lat, site_lon, site_heading_deg,
+        )
+
     controller = ServoController(
         servo,
         receiver,
@@ -115,6 +128,9 @@ def main() -> None:
         install_height_m=install_height_m,
         camera_tilt_deg=camera_tilt_deg,
         vertical_fov_deg=vertical_fov_deg,
+        site_lat=site_lat,
+        site_lon=site_lon,
+        site_heading_deg=site_heading_deg,
     )
 
     logger.info("ARDA Servo 시작 — UDP %s:%d 수신 대기", udp_cfg["host"], udp_cfg["port"])

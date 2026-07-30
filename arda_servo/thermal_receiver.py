@@ -2,8 +2,11 @@
 
 레이더 좌표(receiver.py)로 이미 이동한 이후, dwell 중 열원이 계속 감지되는
 동안 그 방향으로 서보를 미세 추적하기 위한 채널이다. 좌표(x,y,z)가 아니라
-열화상 프레임 중심 대비 좌우 편차만 정규화된 -1.0~1.0 값으로 받는다 —
-실제 각도로의 변환(gain, invert)은 controller.py가 담당한다.
+열화상 프레임 중심 대비 좌우 편차(offset)와 세로 편차(vertical_offset)를
+정규화된 -1.0~1.0 값으로 받는다 — 실제 각도로의 변환(gain, invert)과
+거리·좌표 역산은 controller.py가 담당한다. vertical_offset은 매 보정마다
+함께 올 수 있어, dwell 추적 중에도 카메라 설치 정보로 거리·좌표를 계속
+갱신할 수 있다.
 
 열화상이 관찰을 끝냈는데(사람 매칭이 dwell_seconds 동안 계속 실패해)
 더 이상 보정을 보낼 수 없는 경우에는 {"give_up": true}를 보낸다 —
@@ -31,7 +34,7 @@ class ThermalPan:
     ts: float
     give_up: bool = False  # True면 offset은 의미 없음 — 열화상이 추적을 포기했다는 신호
     confirmed: bool = False  # True면 offset은 의미 없음 — 열화상이 사람으로 확정했다는 신호
-    vertical_offset: float | None = None  # confirmed일 때만 사용 — -1.0(화면 위) ~ 1.0(화면 아래)
+    vertical_offset: float | None = None  # -1.0(화면 위) ~ 1.0(화면 아래). 일반 보정/confirmed 모두에서 올 수 있음
 
 
 class ThermalPanReceiver:
@@ -67,7 +70,10 @@ class ThermalPanReceiver:
                     vertical_offset=vertical_offset,
                 )
             offset = max(-1.0, min(1.0, float(obj["offset"])))
-            return ThermalPan(offset=offset, ts=float(obj.get("ts", 0.0)))
+            vertical_offset = obj.get("vertical_offset")
+            if vertical_offset is not None:
+                vertical_offset = max(-1.0, min(1.0, float(vertical_offset)))
+            return ThermalPan(offset=offset, ts=float(obj.get("ts", 0.0)), vertical_offset=vertical_offset)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.warning("잘못된 열화상 보정 패킷 수신: %s", e)
             return None

@@ -53,6 +53,13 @@ z=0 평면(지면/수면)을 보고 있다"는 가정으로 거리를 다시 계
 `vertical_offset`이 안 오면 레이더가 처음 잰 거리를 그대로 쓰고 방향만
 갱신한다.
 
+`config/settings.yaml`의 `site`(위도/경도/방위각)가 설정돼 있으면 이 로그의
+좌표를 로컬 미터가 아니라 GPS 위도/경도로 남긴다 — `arda-radar`가
+`site.x/y/z` 대신 `site.lat/lon/heading_deg`로 낙하 위치를 GPS로 보고하는
+방식과 맞춘 것이다(`arda_servo/site.py`의 `local_to_latlon()`, `arda-radar`의
+`arda/utils/site.py`와 동일한 변환식을 그대로 복사해서 씀). `site`가 없으면
+기존처럼 레이더 기준 로컬 좌표(m)로 남는다.
+
 좌표계는 레이더 ROI 기준: `x`는 좌우(+가 우측, m), `y`는 센서 정면 거리(m).
 `z`(높이)는 현재 팬 1축 제어에는 사용하지 않는다 — 상하(tilt) 축을
 추가하면 `z`를 elevation 계산에 활용할 수 있다.
@@ -148,10 +155,12 @@ uv run python main.py
 | `servo.dwell_seconds` | 낙하(`fall=true`) 좌표 수신 시 그 각도에서 정지할 시간(초), 이후 자동으로 홈 포지션 복귀. 0이면 정지 없이 즉시 복귀 |
 | `thermal_udp.host` / `port` | 열화상 추적 보정 수신 UDP 바인드 주소 (기본 `0.0.0.0:9996`). 섹션을 지우면 기능 비활성화 |
 | `thermal_udp.pan_gain_deg` | 보정 1건(`offset` -1.0~1.0)당 최대 회전 각도(도) |
-| `camera_geometry.radar_height_m` | 레이더 설치 높이(z=0 기준, m). `arda-radar`의 `site.z`와 같은 값으로 수동으로 맞춰둘 것 |
+| `camera_geometry.radar_height_m` | 레이더 설치 높이(z=0 기준, m). `arda-radar`는 높이(Z)를 다루지 않으므로 설치 시 직접 실측해서 넣을 것 |
 | `camera_geometry.height_offset_from_radar_m` | 카메라가 레이더보다 높은/낮은 정도(m, 낮으면 음수). 카메라 높이 = `radar_height_m` + 이 값 |
 | `camera_geometry.tilt_deg` | 수평 기준 아래로 기울어진 각도(도) — 정지 상태(프레임 세로 중심)의 앙각 |
 | `camera_geometry.vertical_fov_deg` | 열화상 센서의 수직 화각(도) — 사람 확정 시 거리 역산에 사용, 섹션을 지우면 레이더 원거리를 그대로 씀 |
+| `site.lat` / `site.lon` | 레이더 설치 지점의 GPS 위도/경도. `arda-radar`의 `site.lat`/`site.lon`과 같은 값으로 수동으로 맞춰둘 것 |
+| `site.heading_deg` | 레이더 정면(Y축)이 향하는 나침반 방위각. `arda-radar`의 `site.heading_deg`와 같은 값. 섹션을 지우면 사람 확정 로그가 위경도 대신 레이더 기준 로컬 좌표(m)로 남음 |
 
 ## 테스트
 

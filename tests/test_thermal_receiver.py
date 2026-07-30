@@ -20,6 +20,22 @@ def test_recv_parses_valid_packet():
     assert pan is not None
     assert pan.offset == 0.5
     assert pan.ts == 123.0
+    assert pan.vertical_offset is None
+
+    receiver.close()
+
+
+def test_recv_parses_regular_offset_with_vertical_offset():
+    receiver = ThermalPanReceiver(host="127.0.0.1", port=0, timeout=1.0)
+    port = receiver._sock.getsockname()[1]
+
+    _send(port, {"offset": 0.5, "vertical_offset": 0.4, "ts": 123.0})
+    pan = receiver.recv()
+
+    assert pan is not None
+    assert pan.offset == 0.5
+    assert pan.vertical_offset == 0.4
+    assert not pan.confirmed and not pan.give_up
 
     receiver.close()
 
