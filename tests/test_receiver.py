@@ -14,7 +14,7 @@ def test_recv_parses_valid_packet():
     receiver = CoordReceiver(host="127.0.0.1", port=0, timeout=1.0)
     port = receiver._sock.getsockname()[1]
 
-    _send(port, {"x": 0.5, "y": 1.2, "z": 0.1, "fall": True, "ts": 123.0})
+    _send(port, {"x": 0.5, "y": 1.2, "z": 0.1, "fall": True, "confidence": 0.73, "ts": 123.0})
     coord = receiver.recv()
 
     assert coord is not None
@@ -22,6 +22,20 @@ def test_recv_parses_valid_packet():
     assert coord.y == 1.2
     assert coord.z == 0.1
     assert coord.fall is True
+    assert coord.confidence == 0.73
+
+    receiver.close()
+
+
+def test_recv_defaults_confidence_to_zero_when_missing():
+    receiver = CoordReceiver(host="127.0.0.1", port=0, timeout=1.0)
+    port = receiver._sock.getsockname()[1]
+
+    _send(port, {"x": 0.5, "y": 1.2, "z": 0.1, "fall": True, "ts": 123.0})
+    coord = receiver.recv()
+
+    assert coord is not None
+    assert coord.confidence == 0.0
 
     receiver.close()
 

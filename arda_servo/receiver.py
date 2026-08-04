@@ -16,6 +16,7 @@ class Coord:
     z: float
     fall: bool
     ts: float
+    confidence: float = 0.0  # 0~1, FallDetector.last_fall_confidence 그대로. dwell 중 선점 판단에 쓰임
 
 
 class CoordReceiver:
@@ -46,6 +47,7 @@ class CoordReceiver:
                 z=float(obj["z"]),
                 fall=bool(obj.get("fall", False)),
                 ts=float(obj.get("ts", 0.0)),
+                confidence=float(obj.get("confidence", 0.0)),
             )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.warning("잘못된 좌표 패킷 수신: %s", e)

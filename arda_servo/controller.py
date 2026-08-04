@@ -14,19 +14,25 @@ logger = get_logger(__name__)
 
 
 class ServoController:
-    """평소엔 홈 포지션(`center_deg`, 물 방향)에 정지해 있다가, 레이더가
-    낙하를 확정(`fall=True`)한 좌표를 받을 때만 그 방향으로 움직여
-    `dwell_seconds`간 머문 뒤 다시 홈으로 복귀한다. 낙하가 아닌 일반
-    추적 좌표(`fall=False`)는 무시한다 — 사람을 계속 따라다니는 용도가
-    아니라, 평소엔 정해진 구간(강/바다 수면 등)을 보고 있다가 낙하
-    시점에만 그 지점을 확인하는 용도이기 때문이다.
+    """평소엔 마지막으로 멈춘 각도에 가만히 있다가, 레이더가 낙하를
+    확정(`fall=True`)한 좌표를 받을 때만 그 방향으로 움직여
+    `dwell_seconds`간 머문다. 낙하가 아닌 일반 추적 좌표(`fall=False`)는
+    무시한다 — 사람을 계속 따라다니는 용도가 아니라, 낙하 시점에만 그
+    지점을 확인하는 용도이기 때문이다.
+
+    dwell이 끝나면(시간 초과·열화상 포기·열화상 확정 어느 경우든) 서보는
+    홈 포지션으로 돌아가지 않고 그 자리에 그대로 멈춘다 — 서보는 오직
+    레이더 낙하 좌표(트리거)를 받을 때만 움직이고, 그 외에는 항상 마지막
+    위치를 유지한다. `run_forever()` 시작 시 1회 `center_deg`로 이동하는
+    것만 예외다(초기 기준 위치를 잡기 위함이며, 이후로는 트리거 없이는
+    다시 움직이지 않는다).
 
     `thermal_receiver`가 주어지면, dwell 중(레이더 낙하 좌표로 이동한
     직후)에 한해 열화상(arda-thermal-test)이 보내는 발열 방향 보정값을
     받아 그 방향으로 각도를 조금씩 더 움직이고 dwell을 연장한다 — 열원이
     계속 감지되는 동안 계속 그 방향을 따라가다가, 더 이상 보정이 오지
-    않으면(열원을 놓쳤거나 열화상이 안 보내면) dwell이 자연히 만료돼
-    홈으로 복귀한다. 홈에서 대기 중일 때는 열화상 보정을 받지 않는다 —
+    않으면(열원을 놓쳤거나 열화상이 안 보내면) dwell이 자연히 만료돼 그
+    자리에 멈춘다. dwell 중이 아닐 때는 열화상 보정을 받지 않는다 —
     레이더 트리거 없이 임의의 열원에 반응해 움직이지 않기 위함이다.
 
     보정에 `vertical_offset`(프레임 세로 편차)이 함께 오고 카메라 설치
@@ -36,12 +42,12 @@ class ServoController:
     보여주기 위함이다.
 
     열화상이 사람 매칭에 계속 실패해 명시적으로 포기 신호(`give_up`)를
-    보내면, dwell 만료를 기다리지 않고 그 즉시 홈으로 복귀하고 레이더
-    좌표를 다시 받아들인다 — 자체 dwell 타이머만으로는 마지막 보정
-    이후 추가로 dwell_seconds만큼 더 기다려야 해서 반응이 느리다.
+    보내면, dwell 만료를 기다리지 않고 그 즉시 dwell을 끝내고(각도는
+    그대로 유지) 레이더 좌표를 다시 받아들인다 — 자체 dwell 타이머만으로는
+    마지막 보정 이후 추가로 dwell_seconds만큼 더 기다려야 해서 반응이 느리다.
 
     반대로 사람으로 확정되어 확정 신호(`confirmed`)를 받으면 마찬가지로
-    즉시 홈으로 복귀하되, 이번 dwell을 시작시킨 레이더의 원좌표(x, y)와
+    즉시 dwell을 끝내고(각도 유지) 이번 dwell을 시작시킨 레이더의 원좌표(x, y)와
     열화상 추적으로 바뀐 최종 좌표를 함께 로그로 남긴다. 최종 좌표의 거리는
     `install_height_m`/`camera_tilt_deg`/`vertical_fov_deg`가 모두 주어지고
     열화상이 `vertical_offset`(프레임 세로 편차)도 함께 보냈다면, "카메라는
@@ -58,6 +64,18 @@ class ServoController:
     뒤의 값), 같은 `site_lat`/`site_lon`/`site_heading_deg`로 변환하면
     arda-radar의 GPS 로그와 그대로 비교할 수 있다. 주어지지 않으면 기존처럼
     로컬 좌표(m)로 남긴다.
+
+    arda-radar가 낙하마다 신뢰도(`Coord.confidence`, 0~1, 로지스틱 회귀
+    확률)를 함께 보내는데, dwell 중(레이더 좌표로 이동해 열화상 판정을
+    기다리는 동안) 지금 쫓고 있는 후보보다 confidence가 더 높은 새 낙하
+    좌표가 오면, 진행 중이던 추적(열화상 보정 반영분 포함)을 그대로 버리고
+    그 즉시 새 좌표로 재조준해 dwell을 처음부터 다시 시작한다 — 더 유력한
+    낙하 후보가 나타났으면 기존에 보던 곳을 계속 붙잡고 있을 이유가 없기
+    때문이다. 이 선점은 confidence 비교만으로 arda-servo 안에서 독립적으로
+    일어나며, 열화상(arda-thermal-test)에는 별도로 알리지 않는다 —
+    열화상은 arda-radar가 보내는 새 트리거를 받으면 자기 쪽에서 알아서
+    진행 중이던 관찰을 버리고 새로 시작한다(각자 독립적으로 같은 결론에
+    도달하는 구조).
     """
 
     def __init__(
@@ -94,10 +112,12 @@ class ServoController:
         self._site_lat = site_lat
         self._site_lon = site_lon
         self._site_heading_deg = site_heading_deg
-        # 현재 dwell을 시작시킨 레이더 원좌표 — 열화상이 confirmed를 보낼 때
-        # 최종 각도(및 가능하면 거리)를 좌표로 역산해 이 값과 비교 로그를
-        # 남기기 위함.
+        # 현재 dwell을 시작시킨 레이더 원좌표와 그 confidence — 전자는 열화상이
+        # confirmed를 보낼 때 최종 각도(및 가능하면 거리)를 좌표로 역산해 이
+        # 값과 비교 로그를 남기기 위함, 후자는 더 높은 확률의 새 낙하 후보가
+        # 왔을 때 선점 여부를 판단하기 위함.
         self._dwell_start_coord: Coord | None = None
+        self._dwell_confidence: float = 0.0
 
     def run_forever(self) -> None:
         """UDP로 좌표를 수신하며 서보를 구동 (정상 운영 모드)."""
@@ -170,10 +190,19 @@ class ServoController:
         now = time.time()
 
         if now < self._dwell_until:
-            # 낙하 위치에서 머무는 중 — 열화상 보정이 오면 그 방향으로
-            # 더 움직이고 dwell을 연장해 계속 추적한다. 보정이 없으면
-            # 레이더 낙하 판정이 노이즈로 반복돼도 서보가 흔들리지 않도록
-            # 새 좌표는 무시한다.
+            # 낙하 위치에서 머무는 중 — 지금 쫓는 후보보다 확률이 더 높은
+            # 새 낙하 좌표가 오면 무엇보다 먼저 그쪽으로 즉시 전환한다
+            # (선점). 그 외에는 열화상 보정이 오면 반영해 dwell을 연장하고,
+            # 보정도 없으면 레이더 낙하 판정이 노이즈로 반복돼도 서보가
+            # 흔들리지 않도록 새 좌표를 무시한다.
+            if coord is not None and coord.fall and coord.confidence > self._dwell_confidence:
+                logger.warning(
+                    "더 높은 확률의 낙하 후보 수신(%.2f > %.2f) — 기존 추적 중단, 즉시 재조준",
+                    coord.confidence, self._dwell_confidence,
+                )
+                self._start_tracking(coord, now)
+                return
+
             if pan is not None and (pan.give_up or pan.confirmed):
                 self._end_tracking(pan)
             elif pan is not None:
@@ -199,20 +228,26 @@ class ServoController:
             return
 
         if self._dwell_until:
-            final_angle = self._servo.angle
             self._dwell_until = 0.0
-            self._servo.set_angle(self._center_deg)
             logger.info(
-                "dwell 시간 초과로 종료 — 최종 각도=%.1f° → 홈 포지션(%.1f°)으로 복귀",
-                final_angle, self._center_deg,
+                "dwell 시간 초과로 종료 — 각도 %.1f°에서 정지, 레이더 트리거 재개",
+                self._servo.angle,
             )
             self._dwell_start_coord = None
+            self._dwell_confidence = 0.0
 
         if coord is None or not coord.fall:
             # 낙하가 아닌 일반 추적 좌표는 무시한다 — 평소엔 홈 포지션에
             # 고정해 지정된 구역(강/바다 등)을 보고 있어야 하기 때문이다.
             return
 
+        self._start_tracking(coord, now)
+
+    def _start_tracking(self, coord: Coord, now: float) -> None:
+        """레이더 낙하 좌표로 서보를 이동시키고 dwell을 (재)시작함 — 홈에서
+        새로 낙하를 받을 때와, dwell 중 더 높은 확률의 후보로 선점 전환할
+        때 둘 다에서 쓰인다. 이전에 추적하던 좌표·열화상 진행 상황(있었다면)은
+        전부 버리고 이 좌표 기준으로 처음부터 다시 시작한다."""
         angle = xyz_to_pan_angle(
             coord.x,
             coord.y,
@@ -225,9 +260,11 @@ class ServoController:
         )
         self._servo.set_angle(angle)
         self._dwell_start_coord = coord
+        self._dwell_confidence = coord.confidence
         logger.info(
-            "낙하 좌표 수신 — x=%.2f y=%.2f → angle=%.1f°로 이동, %.1fs간 정지(dwell), 열화상 판정 대기",
-            coord.x, coord.y, angle, self._dwell_seconds,
+            "낙하 좌표 수신 — x=%.2f y=%.2f confidence=%.2f → angle=%.1f°로 이동, "
+            "%.1fs간 정지(dwell), 열화상 판정 대기",
+            coord.x, coord.y, coord.confidence, angle, self._dwell_seconds,
         )
         if self._dwell_seconds > 0:
             self._dwell_until = now + self._dwell_seconds
@@ -241,10 +278,12 @@ class ServoController:
         self._servo.set_angle(new_angle)
 
     def _end_tracking(self, pan: ThermalPan) -> None:
-        """열화상의 give_up/confirmed 신호를 받아 dwell을 즉시 끝내고 홈으로 복귀함."""
+        """열화상의 give_up/confirmed 신호를 받아 dwell을 즉시 끝냄. 서보는
+        홈으로 복귀하지 않고 지금 각도에 그대로 멈춘다 — 트리거(레이더
+        낙하 좌표)가 있을 때만 움직이고, 그 외에는 항상 마지막 위치를
+        유지한다."""
         final_angle = self._servo.angle
         self._dwell_until = 0.0
-        self._servo.set_angle(self._center_deg)
 
         if pan.confirmed:
             coord = self._dwell_start_coord
@@ -255,22 +294,23 @@ class ServoController:
                 position_word = "위치" if self._site_lat is not None else "좌표"
                 logger.warning(
                     "열화상 사람 확정 — 레이더 원%s %s → 열화상 추적 후 %s %s "
-                    "(거리 %.2fm, %s) → 홈(%.1f°) 복귀",
+                    "(거리 %.2fm, %s) — 각도 %.1f°에서 정지, 레이더 트리거 재개",
                     position_word, orig_position, position_word, final_position,
-                    range_m, range_note, self._center_deg,
+                    range_m, range_note, final_angle,
                 )
             else:
                 logger.warning(
-                    "열화상 사람 확정 — 레이더 원좌표 없음, 최종 각도=%.1f° → 홈(%.1f°) 복귀",
-                    final_angle, self._center_deg,
+                    "열화상 사람 확정 — 레이더 원좌표 없음, 각도 %.1f°에서 정지, 레이더 트리거 재개",
+                    final_angle,
                 )
         else:
             logger.info(
-                "열화상이 추적을 포기함 — 즉시 홈 포지션(%.1f°)으로 복귀, 레이더 트리거 재개",
-                self._center_deg,
+                "열화상이 추적을 포기함 — 각도 %.1f°에서 정지, 레이더 트리거 재개",
+                final_angle,
             )
 
         self._dwell_start_coord = None
+        self._dwell_confidence = 0.0
 
     def _resolve_range(self, coord: Coord, vertical_offset: float | None) -> tuple[float, str]:
         """현재 거리를 구함. 가능하면 카메라 설치 정보로 z=0 기준 역산하고,

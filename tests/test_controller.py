@@ -95,11 +95,11 @@ def test_dwell_ignores_new_coords_until_expiry():
     assert servo.angle == 135.0  # dwell 중이라 두 번째 좌표가 반영되지 않아야 함
 
 
-def test_returns_home_after_dwell_expires():
+def test_dwell_expiry_holds_last_angle_without_returning_home():
     servo = PanServo(pin=33, simulate=True)
     receiver = FakeReceiver([
         Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0),    # 100.0 — dwell 시작, until=103.0
-        Coord(x=-1.0, y=1.0, z=0.0, fall=False, ts=0.0),  # 104.0 — dwell 종료, 홈으로 복귀
+        Coord(x=-1.0, y=1.0, z=0.0, fall=False, ts=0.0),  # 104.0 — dwell 종료, 홈 복귀 없음
     ])
     controller = ServoController(servo, receiver, center_deg=90.0, dwell_seconds=3.0)
 
@@ -108,8 +108,9 @@ def test_returns_home_after_dwell_expires():
     with patch("arda_servo.controller.time.time", return_value=104.0):
         controller.step()
 
-    # fall=False 좌표는 무시되고 홈 포지션(center_deg)으로 복귀해야 한다
-    assert servo.angle == 90.0
+    # fall=False 좌표는 무시되고, 서보는 홈(90.0)이 아니라 마지막 각도(135.0)에
+    # 그대로 멈춰 있어야 한다 — 트리거가 있을 때만 움직인다.
+    assert servo.angle == 135.0
     assert controller._dwell_until == 0.0
 
 
@@ -139,6 +140,77 @@ def test_run_forever_moves_to_home_on_start():
     controller.run_forever()
 
     assert servo.angle == 77.0
+
+
+def test_higher_confidence_coord_preempts_current_dwell():
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([
+        Coord(x=1.0, y=1.0, z=0.0, fall=True, confidence=0.3, ts=0.0),  # 1차 낙하
+        Coord(x=-1.0, y=1.0, z=0.0, fall=True, confidence=0.6, ts=0.0),  # 더 확률 높은 후보
+    ])
+    controller = ServoController(servo, receiver, center_deg=90.0, dwell_seconds=10.0)
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()  # angle=135.0 (atan2(1,1)=45+90), confidence=0.3
+
+    assert servo.angle == 135.0
+    assert controller._dwell_confidence == 0.3
+
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()  # confidence=0.6 > 0.3 → 즉시 선점 전환
+
+    assert servo.angle == 45.0  # atan2(-1,1)=-45+90
+    assert controller._dwell_confidence == 0.6
+    assert controller._dwell_until == 111.0  # 101.0 + dwell_seconds(10.0)로 새로 시작됨
+
+
+def test_lower_or_equal_confidence_coord_does_not_preempt():
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([
+        Coord(x=1.0, y=1.0, z=0.0, fall=True, confidence=0.6, ts=0.0),
+        Coord(x=-1.0, y=1.0, z=0.0, fall=True, confidence=0.6, ts=0.0),  # 동일 확률 — 선점 아님
+        Coord(x=-1.0, y=1.0, z=0.0, fall=True, confidence=0.2, ts=0.0),  # 더 낮은 확률 — 선점 아님
+    ])
+    controller = ServoController(servo, receiver, center_deg=90.0, dwell_seconds=10.0)
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()  # angle=135.0, confidence=0.6
+
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()  # 동일 confidence → 무시
+    with patch("arda_servo.controller.time.time", return_value=102.0):
+        controller.step()  # 더 낮은 confidence → 무시
+
+    assert servo.angle == 135.0  # 그대로 유지
+    assert controller._dwell_confidence == 0.6
+
+
+def test_preemption_discards_thermal_tracking_progress():
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([
+        Coord(x=1.0, y=1.0, z=0.0, fall=True, confidence=0.3, ts=0.0),
+        None,
+        Coord(x=-1.0, y=1.0, z=0.0, fall=True, confidence=0.9, ts=0.0),
+    ])
+    thermal = FakeThermalReceiver([None, ThermalPan(offset=0.5, ts=0.0)])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal, thermal_pan_gain_deg=10.0,
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()  # angle=135.0
+
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()  # 열화상 보정 → angle=140.0 (추적으로 각도가 움직임)
+
+    assert servo.angle == 140.0
+
+    with patch("arda_servo.controller.time.time", return_value=102.0):
+        controller.step()  # 더 높은 확률의 새 낙하 → 열화상 추적분을 버리고 새 좌표 기준으로 재조준
+
+    assert servo.angle == 45.0  # 이전 추적(140.0)과 무관하게 새 좌표에서 새로 계산된 각도
+    assert controller._dwell_start_coord.confidence == 0.9
 
 
 def test_thermal_pan_applied_and_extends_dwell_during_tracking():
@@ -245,7 +317,7 @@ def test_thermal_pan_respects_invert():
     assert servo.angle == 85.0
 
 
-def test_thermal_give_up_returns_home_immediately():
+def test_thermal_give_up_holds_last_angle_immediately():
     servo = PanServo(pin=33, simulate=True)
     receiver = FakeReceiver([Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0)])
     thermal = FakeThermalReceiver([None, ThermalPan(offset=0.0, ts=0.0, give_up=True)])
@@ -257,9 +329,9 @@ def test_thermal_give_up_returns_home_immediately():
         controller.step()  # 낙하 좌표 → angle=135.0, dwell_until=110.0
 
     with patch("arda_servo.controller.time.time", return_value=101.0):
-        controller.step()  # give_up 수신 → dwell 만료를 기다리지 않고 즉시 홈 복귀
+        controller.step()  # give_up 수신 → dwell 만료를 기다리지 않고 즉시 종료(각도 유지)
 
-    assert servo.angle == 90.0
+    assert servo.angle == 135.0  # 홈으로 복귀하지 않고 마지막 각도에 그대로 멈춤
     assert controller._dwell_until == 0.0
 
 
@@ -278,14 +350,14 @@ def test_new_fall_coord_accepted_right_after_give_up():
     with patch("arda_servo.controller.time.time", return_value=100.0):
         controller.step()  # angle=135.0 (atan2(1,1)=45+90), dwell 시작
     with patch("arda_servo.controller.time.time", return_value=101.0):
-        controller.step()  # give_up → 즉시 홈(90.0) 복귀
+        controller.step()  # give_up → 즉시 종료(홈 복귀 없이 135.0에 그대로 멈춤)
     with patch("arda_servo.controller.time.time", return_value=102.0):
         controller.step()  # 새 낙하 좌표 즉시 반영돼야 함 (dwell 만료를 더 기다리지 않음)
 
     assert servo.angle == 45.0  # atan2(-1,1)=-45 + 90
 
 
-def test_thermal_confirmed_returns_home_and_logs_back_computed_coord(caplog):
+def test_thermal_confirmed_holds_last_angle_and_logs_back_computed_coord(caplog):
     servo = PanServo(pin=33, simulate=True)
     receiver = FakeReceiver([Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0), None])
     thermal = FakeThermalReceiver([
@@ -310,9 +382,9 @@ def test_thermal_confirmed_returns_home_and_logs_back_computed_coord(caplog):
 
     with caplog.at_level("WARNING"):
         with patch("arda_servo.controller.time.time", return_value=102.0):
-            controller.step()  # confirmed 수신 → 즉시 홈 복귀 + 좌표 역산 로그
+            controller.step()  # confirmed 수신 → 즉시 종료 + 좌표 역산 로그(각도는 유지)
 
-    assert servo.angle == 90.0
+    assert servo.angle == 140.0  # 홈으로 복귀하지 않고 확정 당시 각도에 그대로 멈춤
     assert controller._dwell_until == 0.0
     assert controller._dwell_start_coord is None
 
