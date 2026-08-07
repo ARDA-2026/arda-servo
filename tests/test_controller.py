@@ -185,7 +185,35 @@ def test_lower_or_equal_confidence_coord_does_not_preempt():
     assert controller._dwell_confidence == 0.6
 
 
-def test_preemption_discards_thermal_tracking_progress():
+def test_confidence_preemption_still_works_before_thermal_engages():
+    # 열화상이 아직 아무 보정도 안 보낸 상태(레이더 초기 조준만 된 상태)라면
+    # confidence 기반 선점이 기존처럼 그대로 동작해야 한다.
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([
+        Coord(x=1.0, y=1.0, z=0.0, fall=True, confidence=0.3, ts=0.0),
+        Coord(x=-1.0, y=1.0, z=0.0, fall=True, confidence=0.9, ts=0.0),
+    ])
+    thermal = FakeThermalReceiver([None, None])  # 열화상 연동은 있지만 아직 아무것도 못 잡음
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0, thermal_receiver=thermal,
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()  # angle=135.0
+
+    assert controller._thermal_engaged is False
+
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()  # 열화상 미개입 상태 → confidence 선점 그대로 동작
+
+    assert servo.angle == 45.0
+    assert controller._dwell_confidence == 0.9
+
+
+def test_thermal_engagement_blocks_confidence_preemption():
+    # 열화상이 열원을 감지해 보정을 한 번이라도 보내온 뒤로는(=매칭 시도
+    # 중이면), 레이더가 더 높은 confidence의 새 좌표를 보내도 무시하고
+    # 열화상이 서보 제어권을 계속 가져야 한다.
     servo = PanServo(pin=33, simulate=True)
     receiver = FakeReceiver([
         Coord(x=1.0, y=1.0, z=0.0, fall=True, confidence=0.3, ts=0.0),
@@ -199,18 +227,60 @@ def test_preemption_discards_thermal_tracking_progress():
     )
 
     with patch("arda_servo.controller.time.time", return_value=100.0):
-        controller.step()  # angle=135.0
+        controller.step()  # angle=135.0, 아직 열화상 미개입
+
+    assert controller._thermal_engaged is False
 
     with patch("arda_servo.controller.time.time", return_value=101.0):
-        controller.step()  # 열화상 보정 → angle=140.0 (추적으로 각도가 움직임)
+        controller.step()  # 열화상 보정 수신 → angle=140.0, 이제부터 열화상이 제어권을 가짐
 
     assert servo.angle == 140.0
+    assert controller._thermal_engaged is True
 
     with patch("arda_servo.controller.time.time", return_value=102.0):
-        controller.step()  # 더 높은 확률의 새 낙하 → 열화상 추적분을 버리고 새 좌표 기준으로 재조준
+        controller.step()  # 더 높은 확률(0.9>0.3)의 새 낙하가 와도 무시돼야 함
 
-    assert servo.angle == 45.0  # 이전 추적(140.0)과 무관하게 새 좌표에서 새로 계산된 각도
-    assert controller._dwell_start_coord.confidence == 0.9
+    assert servo.angle == 140.0  # 선점되지 않고 열화상이 추적하던 각도 그대로 유지
+    assert controller._dwell_start_coord.confidence == 0.3  # 원래 좌표 그대로 유지됨
+
+
+def test_thermal_engaged_resets_for_next_dwell_cycle():
+    # give_up으로 dwell이 끝나면 _thermal_engaged도 초기화돼, 다음 낙하
+    # 트리거는 열화상 개입 여부와 무관하게 정상적으로 다시 시작해야 한다.
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([
+        Coord(x=1.0, y=1.0, z=0.0, fall=True, confidence=0.3, ts=0.0),
+        None,
+        None,
+        Coord(x=-1.0, y=1.0, z=0.0, fall=True, confidence=0.1, ts=0.0),
+    ])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.5, ts=0.0),
+        ThermalPan(offset=0.0, ts=0.0, give_up=True),
+    ])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal, thermal_pan_gain_deg=10.0,
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()  # angle=135.0
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()  # 열화상 보정 → _thermal_engaged=True
+
+    assert controller._thermal_engaged is True
+
+    with patch("arda_servo.controller.time.time", return_value=102.0):
+        controller.step()  # give_up → dwell 종료, _thermal_engaged 초기화
+
+    assert controller._thermal_engaged is False
+
+    with patch("arda_servo.controller.time.time", return_value=103.0):
+        controller.step()  # 새 낙하(confidence=0.1이어도 idle 상태라 정상 수신)
+
+    assert servo.angle == 45.0  # atan2(-1,1)=-45+90
+    assert controller._thermal_engaged is False
 
 
 def test_thermal_pan_applied_and_extends_dwell_during_tracking():

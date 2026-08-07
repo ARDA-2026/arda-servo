@@ -60,13 +60,12 @@ camera_geometry:
   vertical_fov_deg: 35.0  # MLX90640 Standard 렌즈의 수직 화각(도) — README에 55°(수평)만 명시돼
                            # 있어 Melexis/Pimoroni 공식 사양(55°x35°)의 35°를 사용함
 
-# 레이더 설치 지점의 GPS 위도/경도와 정면 방위각. arda-radar가 site.x/y/z(로컬
-# 미터) 대신 site.lat/lon/heading_deg로 낙하 위치를 GPS로 보고하도록 바뀌어서,
-# 사람 확정(confirmed) 시 arda-servo도 같은 방식으로 좌표를 로그에 남기기
-# 위한 설정이다. arda-radar와 완전히 분리된 프로젝트라 값을 직접 읽어오지
-# 않으므로, arda-radar의 config/settings.yaml site 섹션과 같은 값으로 수동으로
-# 맞춰둘 것. 없으면 기존처럼 레이더 기준 로컬 좌표(m)로 로그에 남는다.
+# 레이더 설치 지점의 GPS 위도/경도와 정면 방위각. 사람 확정(confirmed) 시
+# 좌표를 로컬 미터 대신 위경도로 로그에 남기기 위한 설정이다. arda-radar와
+# 완전히 분리된 프로젝트라 값을 직접 읽어오지 않으므로, arda-radar의
+# config/settings.yaml site 섹션과 같은 값으로 수동으로 맞춰둘 것. 없으면
+# 기존처럼 레이더 기준 로컬 좌표(m)로 로그에 남는다.
 site:
-  lat: 37.5336       # 설치 지점 위도 (도, WGS84) — arda-radar의 site.lat과 같은 값
-  lon: 126.9364       # 설치 지점 경도 (도, WGS84) — arda-radar의 site.lon과 같은 값
-  heading_deg: 140.0    # 레이더 정면(Y축)이 향하는 나침반 방위각 — arda-radar의 site.heading_deg와 같은 값
+  lat: 37.5336        # 설치 지점 위도 (도, WGS84)
+  lon: 126.9364        # 설치 지점 경도 (도, WGS84)
+  heading_deg: 140.0    # 레이더 정면(Y축)이 향하는 나침반 방위각
