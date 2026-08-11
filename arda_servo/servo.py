@@ -17,6 +17,27 @@ MIN_PULSE_MS = 0.5    # min_deg에 대응하는 펄스폭
 MAX_PULSE_MS = 2.5    # max_deg에 대응하는 펄스폭
 
 
+def _board_pin_to_tegra_soc(board_pin: int) -> str:
+    """BOARD(물리 핀 번호)를 TEGRA_SOC 핀 이름으로 변환.
+
+    arda-raset처럼 서보와 thermal-camera(Adafruit Blinka, `import board`)를
+    한 프로세스에서 같이 쓰는 경우를 위한 것 — Blinka는 내부적으로
+    GPIO.setmode(GPIO.TEGRA_SOC)를 호출하는데, Jetson.GPIO는 프로세스당
+    setmode 모드를 하나로 고정하고 다른 모드로 재호출하면 예외를 던진다
+    (같은 모드 재호출은 허용). 서보도 TEGRA_SOC로 맞춰두면 어느 쪽이
+    먼저 초기화되든 충돌하지 않는다. 설정 파일은 배선 편의를 위해 BOARD
+    물리 핀 번호를 그대로 쓰고, 변환은 여기서만 한다.
+    """
+    from Jetson.GPIO import gpio_pin_data
+
+    _, _, channel_data = gpio_pin_data.get_data()
+    line_offset = channel_data["BOARD"][board_pin].line_offset
+    for name, info in channel_data["TEGRA_SOC"].items():
+        if info.line_offset == line_offset:
+            return name
+    raise ValueError(f"BOARD 핀 {board_pin}에 대응하는 TEGRA_SOC 핀을 찾지 못했습니다")
+
+
 class PanServo:
     """단일 축(pan) 서보 모터 제어기. Jetson.GPIO 소프트웨어 PWM 사용.
 
@@ -41,6 +62,7 @@ class PanServo:
         self._max_pulse_ms = max_pulse_ms
         self._angle: float | None = None
         self._pwm = None
+        self._channel: str | None = None
 
         self._simulate = simulate or not _HAS_GPIO
         if not _HAS_GPIO and not simulate:
@@ -50,9 +72,10 @@ class PanServo:
                 logger.info("시뮬레이션 모드로 실행 — 실제 서보는 움직이지 않음")
             return
 
-        GPIO.setmode(GPIO.BOARD)
-        GPIO.setup(self._pin, GPIO.OUT)
-        self._pwm = GPIO.PWM(self._pin, PWM_FREQ_HZ)
+        self._channel = _board_pin_to_tegra_soc(self._pin)
+        GPIO.setmode(GPIO.TEGRA_SOC)
+        GPIO.setup(self._channel, GPIO.OUT)
+        self._pwm = GPIO.PWM(self._channel, PWM_FREQ_HZ)
         self._pwm.start(0)
 
     @property
@@ -86,4 +109,4 @@ class PanServo:
         if self._simulate:
             return
         self._pwm.stop()
-        GPIO.cleanup(self._pin)
+        GPIO.cleanup(self._channel)
