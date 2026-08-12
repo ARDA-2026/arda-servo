@@ -181,15 +181,15 @@ class ServoController:
             )
             if higher_confidence_coord and not self._thermal_engaged:
                 logger.warning(
-                    "더 높은 확률의 낙하 후보 수신(%.2f > %.2f) — 기존 추적 중단, 즉시 재조준",
+                    "[제어권 이동] 더 높은 확률의 낙하 후보 수신(%.2f > %.2f) — 기존 추적 중단, 즉시 재조준",
                     coord.confidence, self._dwell_confidence,
                 )
                 self._start_tracking(coord, now)
                 return
             elif higher_confidence_coord:
-                logger.debug(
-                    "더 높은 확률의 낙하 후보(%.2f > %.2f) 수신했지만 열화상이 이미 열원을 "
-                    "추적 중이라 무시함 — 열화상이 서보 제어권을 가짐",
+                logger.info(
+                    "[제어권 유지] 더 높은 확률의 낙하 후보(%.2f > %.2f) 수신 — 열화상이 이미 "
+                    "열원을 추적 중이라 무시함",
                     coord.confidence, self._dwell_confidence,
                 )
 
