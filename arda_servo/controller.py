@@ -49,12 +49,14 @@ class ServoController:
     dwell 중 지금 쫓는 후보보다 confidence가 더 높은 새 낙하 좌표가 오면
     진행 중이던 추적을 버리고 그 즉시 새 좌표로 재조준해 dwell을 처음부터
     다시 시작한다 — 더 유력한 후보가 나타났으면 기존 위치를 붙잡고 있을
-    이유가 없기 때문이다. 단, 열화상이 이번 dwell에서 실제 보정(`ThermalPan`,
-    give_up/confirmed 아닌 일반 보정)을 한 번이라도 보내온 뒤(`_thermal_engaged`)
-    라면 confidence와 무관하게 이 선점을 무시한다 — 레이더 좌표는 대략적인
-    초기 조준일 뿐이고, 열화상이 실제 열원을 붙잡아 추적을 시작한 순간부터는
-    서보 제어권을 열화상이 갖는다는 원칙이다. 열화상이 스스로 끝내야만
-    (포기/확정) 다시 레이더 좌표를 선점 대상으로 받아들인다.
+    이유가 없기 때문이다. 단, 열화상이 이번 dwell에서 원하는 모양과 매칭된
+    보정(`ThermalPan.matched=True`, give_up/confirmed 아닌 일반 보정)을 한
+    번이라도 보내온 뒤(`_thermal_engaged`)라면 confidence와 무관하게 이
+    선점을 무시한다 — 단순히 열이 감지됐다는 것만으로는(matched=False)
+    제어권이 넘어가지 않는다. 레이더 좌표는 대략적인 초기 조준일 뿐이고,
+    열화상이 원하는 모양과 매칭되기 시작한 순간부터는 서보 제어권을
+    열화상이 갖는다는 원칙이다. 열화상이 스스로 끝내야만(포기/확정) 다시
+    레이더 좌표를 선점 대상으로 받아들인다.
     """
 
     def __init__(
@@ -97,9 +99,11 @@ class ServoController:
         # 왔을 때 선점 여부를 판단하기 위함.
         self._dwell_start_coord: Coord | None = None
         self._dwell_confidence: float = 0.0
-        # 이번 dwell에서 열화상이 실제 열원을 잡아 일반 보정을 한 번이라도
-        # 보내왔는지 — True가 되면 레이더의 confidence 기반 선점을 막는다
-        # (열원을 감지한 뒤로는 열화상이 서보 제어권을 갖는다는 원칙).
+        # 이번 dwell에서 열화상이 원하는 모양과 매칭된 일반 보정(matched=True)을
+        # 한 번이라도 보내왔는지 — True가 되면 레이더의 confidence 기반 선점을
+        # 막는다(원하는 모양과 매칭되기 시작한 뒤로는 열화상이 서보 제어권을
+        # 갖는다는 원칙). 단순히 열이 감지된 것(matched=False)만으로는 True가
+        # 되지 않는다.
         self._thermal_engaged: bool = False
 
     def run_forever(self) -> None:
@@ -189,14 +193,19 @@ class ServoController:
             elif higher_confidence_coord:
                 logger.info(
                     "[제어권 유지] 더 높은 확률의 낙하 후보(%.2f > %.2f) 수신 — 열화상이 이미 "
-                    "열원을 추적 중이라 무시함",
+                    "매칭된 대상을 추적 중이라 무시함",
                     coord.confidence, self._dwell_confidence,
                 )
 
             if pan is not None and (pan.give_up or pan.confirmed):
                 self._end_tracking(pan)
             elif pan is not None:
-                self._thermal_engaged = True
+                # 보정(팬)은 열이 감지된 모든 프레임에서 오지만, 제어권
+                # (_thermal_engaged)은 원하는 모양과 매칭된 프레임에서만 걸린다
+                # — 단순히 열이 감지된 것만으로 더 유력한 새 낙하 후보의
+                # 선점을 막지 않기 위함(클래스 docstring 참고).
+                if pan.matched:
+                    self._thermal_engaged = True
                 self._apply_thermal_pan(pan.offset)
                 self._dwell_until = now + self._dwell_seconds
 

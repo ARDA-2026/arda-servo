@@ -211,8 +211,8 @@ def test_confidence_preemption_still_works_before_thermal_engages():
 
 
 def test_thermal_engagement_blocks_confidence_preemption():
-    # 열화상이 열원을 감지해 보정을 한 번이라도 보내온 뒤로는(=매칭 시도
-    # 중이면), 레이더가 더 높은 confidence의 새 좌표를 보내도 무시하고
+    # 열화상이 원하는 모양과 매칭된(matched=True) 보정을 한 번이라도 보내온
+    # 뒤로는, 레이더가 더 높은 confidence의 새 좌표를 보내도 무시하고
     # 열화상이 서보 제어권을 계속 가져야 한다.
     servo = PanServo(pin=33, simulate=True)
     receiver = FakeReceiver([
@@ -220,7 +220,7 @@ def test_thermal_engagement_blocks_confidence_preemption():
         None,
         Coord(x=-1.0, y=1.0, z=0.0, fall=True, confidence=0.9, ts=0.0),
     ])
-    thermal = FakeThermalReceiver([None, ThermalPan(offset=0.5, ts=0.0)])
+    thermal = FakeThermalReceiver([None, ThermalPan(offset=0.5, ts=0.0, matched=True)])
     controller = ServoController(
         servo, receiver, center_deg=90.0, dwell_seconds=10.0,
         thermal_receiver=thermal, thermal_pan_gain_deg=10.0,
@@ -232,7 +232,7 @@ def test_thermal_engagement_blocks_confidence_preemption():
     assert controller._thermal_engaged is False
 
     with patch("arda_servo.controller.time.time", return_value=101.0):
-        controller.step()  # 열화상 보정 수신 → angle=140.0, 이제부터 열화상이 제어권을 가짐
+        controller.step()  # 매칭된 보정 수신 → angle=140.0, 이제부터 열화상이 제어권을 가짐
 
     assert servo.angle == 140.0
     assert controller._thermal_engaged is True
@@ -242,6 +242,38 @@ def test_thermal_engagement_blocks_confidence_preemption():
 
     assert servo.angle == 140.0  # 선점되지 않고 열화상이 추적하던 각도 그대로 유지
     assert controller._dwell_start_coord.confidence == 0.3  # 원래 좌표 그대로 유지됨
+
+
+def test_thermal_pan_without_match_does_not_grant_control_and_allows_preemption():
+    # 열이 감지됐지만 원하는 모양과 매칭되지 않은 보정(matched=False, 기본값)만
+    # 온 경우 — 반사광/손처럼 사람이 아닌 열원에 제어권을 뺏기면 안 되므로
+    # _thermal_engaged는 여전히 False여야 하고, 더 높은 confidence의 새 낙하가
+    # 오면 정상적으로 선점돼야 한다.
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([
+        Coord(x=1.0, y=1.0, z=0.0, fall=True, confidence=0.3, ts=0.0),
+        None,
+        Coord(x=-1.0, y=1.0, z=0.0, fall=True, confidence=0.9, ts=0.0),
+    ])
+    thermal = FakeThermalReceiver([None, ThermalPan(offset=0.5, ts=0.0)])  # matched=False(기본값)
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal, thermal_pan_gain_deg=10.0,
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()  # angle=135.0
+
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()  # 매칭 안 된 보정 수신 → 각도는 따라가지만 제어권은 안 넘어감
+
+    assert servo.angle == 140.0  # 팬 보정 자체는 matched 여부와 무관하게 적용됨
+    assert controller._thermal_engaged is False
+
+    with patch("arda_servo.controller.time.time", return_value=102.0):
+        controller.step()  # 더 높은 확률(0.9>0.3)의 새 낙하는 선점돼야 함
+
+    assert controller._dwell_start_coord.confidence == 0.9  # 새 후보로 정상 대체됨
 
 
 def test_thermal_engaged_resets_for_next_dwell_cycle():
@@ -256,7 +288,7 @@ def test_thermal_engaged_resets_for_next_dwell_cycle():
     ])
     thermal = FakeThermalReceiver([
         None,
-        ThermalPan(offset=0.5, ts=0.0),
+        ThermalPan(offset=0.5, ts=0.0, matched=True),
         ThermalPan(offset=0.0, ts=0.0, give_up=True),
     ])
     controller = ServoController(
@@ -267,7 +299,7 @@ def test_thermal_engaged_resets_for_next_dwell_cycle():
     with patch("arda_servo.controller.time.time", return_value=100.0):
         controller.step()  # angle=135.0
     with patch("arda_servo.controller.time.time", return_value=101.0):
-        controller.step()  # 열화상 보정 → _thermal_engaged=True
+        controller.step()  # 매칭된 보정 → _thermal_engaged=True
 
     assert controller._thermal_engaged is True
 
