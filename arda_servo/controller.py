@@ -2,6 +2,7 @@
 
 import math
 import time
+from typing import Callable
 
 from .angle import elevation_range, pan_angle_to_xyz, xyz_to_pan_angle
 from .receiver import Coord, CoordReceiver
@@ -84,6 +85,7 @@ class ServoController:
         site_lon: float | None = None,
         site_heading_deg: float = 0.0,
         report_url: str | None = None,
+        on_confirmed: Callable[[float, float], None] | None = None,
     ):
         self._servo = servo
         self._receiver = receiver
@@ -102,6 +104,7 @@ class ServoController:
         self._site_lon = site_lon
         self._site_heading_deg = site_heading_deg
         self._report_url = report_url
+        self._on_confirmed = on_confirmed
         # 현재 dwell을 시작시킨 레이더 원좌표와 그 confidence — 전자는 열화상이
         # confirmed를 보낼 때 최종 각도(및 가능하면 거리)를 좌표로 역산해 이
         # 값과 비교 로그를 남기기 위함, 후자는 더 높은 확률의 새 낙하 후보가
@@ -316,22 +319,33 @@ class ServoController:
                 )
 
                 # 레이더 최초 감지 좌표가 아니라, 여기서 방금 계산한 열화상 추적
-                # 후 보정 좌표(final_x, final_y)를 report_url로 보낸다 —
-                # arda-radar는 더 이상 이 보고를 하지 않는다(main.py 참고).
-                if self._report_url:
+                # 후 보정 좌표(final_x, final_y)를 알린다 — arda-radar는 더
+                # 이상 이 보고를 하지 않는다(main.py 참고). report_url은 이
+                # 좌표를 HTTP POST로 보내고 싶은 호출자(arda-raset 등)를
+                # 위한 것이고, on_confirmed는 HTTP가 아닌 다른 경로(예:
+                # arda-bringup의 ROS 토픽 발행)로 알리고 싶은 호출자를 위한
+                # 콜백이다 — 둘 다, 어느 한쪽만, 또는 아무것도 설정하지 않을
+                # 수 있다.
+                if self._report_url or self._on_confirmed:
                     final_latlon = self._resolve_latlon(final_x, final_y)
                     if final_latlon is not None:
                         final_lat, final_lon = final_latlon
-                        sent = send_fall_report(self._report_url, final_lat, final_lon)
-                        logger.info(
-                            "%s — 보정 좌표 lat=%.6f lon=%.6f -> %s",
-                            "낙하 위치 보고 전송됨" if sent else "낙하 위치 보고 전송 실패",
-                            final_lat, final_lon, self._report_url,
-                        )
+                        if self._report_url:
+                            sent = send_fall_report(self._report_url, final_lat, final_lon)
+                            logger.info(
+                                "%s — 보정 좌표 lat=%.6f lon=%.6f -> %s",
+                                "낙하 위치 보고 전송됨" if sent else "낙하 위치 보고 전송 실패",
+                                final_lat, final_lon, self._report_url,
+                            )
+                        if self._on_confirmed:
+                            try:
+                                self._on_confirmed(final_lat, final_lon)
+                            except Exception:
+                                logger.exception("on_confirmed 콜백 실행 중 오류")
                     else:
                         logger.warning(
-                            "report_url이 설정됐지만 site.lat/site.lon이 없어 "
-                            "위경도로 변환할 수 없음 — 보고 전송 생략"
+                            "report_url/on_confirmed이 설정됐지만 site.lat/site.lon이 "
+                            "없어 위경도로 변환할 수 없음 — 보고 전송 생략"
                         )
             else:
                 logger.warning(

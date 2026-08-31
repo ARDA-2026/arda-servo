@@ -1,5 +1,5 @@
 import math
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from arda_servo.angle import elevation_range, pan_angle_to_xyz
 from arda_servo.controller import ServoController
@@ -688,6 +688,62 @@ def test_thermal_confirmed_with_report_url_but_no_site_config_skips_send(caplog)
 
     mock_send.assert_not_called()
     assert "위경도로 변환할 수 없음" in caplog.text
+
+
+def test_thermal_confirmed_calls_on_confirmed_with_corrected_coordinate():
+    # on_confirmed는 report_url과 독립적으로 동작해야 한다 — HTTP가 아닌
+    # 다른 경로(예: ROS 토픽 발행)로 보정 좌표를 알리고 싶은 호출자를 위한
+    # 콜백이므로, report_url 없이도 호출돼야 한다.
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0), None])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.5, ts=0.0),
+        ThermalPan(offset=0.0, ts=0.0, confirmed=True),
+    ])
+    on_confirmed = Mock()
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal, thermal_pan_gain_deg=10.0,
+        site_lat=37.5, site_lon=127.0, site_heading_deg=0.0,
+        on_confirmed=on_confirmed,
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()
+    with patch("arda_servo.controller.time.time", return_value=102.0):
+        controller.step()
+
+    assert on_confirmed.call_count == 1
+    sent_lat, sent_lon = on_confirmed.call_args[0]
+
+    range_m = math.hypot(1.0, 1.0)
+    final_x, final_y = pan_angle_to_xyz(140.0, range_m, center_deg=90.0)
+    expected_lat, expected_lon = local_to_latlon(final_x, final_y, 37.5, 127.0, 0.0)
+    assert sent_lat == expected_lat
+    assert sent_lon == expected_lon
+
+
+def test_thermal_confirmed_on_confirmed_exception_does_not_crash_step():
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0)])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.0, ts=0.0, confirmed=True),
+    ])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal,
+        site_lat=37.5, site_lon=127.0,
+        on_confirmed=Mock(side_effect=RuntimeError("boom")),
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()  # 콜백이 예외를 던져도 step() 자체는 죽지 않아야 함
 
 
 def test_run_forever_closes_thermal_receiver():
