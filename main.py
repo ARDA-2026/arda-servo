@@ -105,15 +105,19 @@ def main() -> None:
     site_cfg = cfg.get("site")
     site_lat = site_lon = None
     site_heading_deg = 0.0
+    report_url = ""
     if site_cfg:
         site_lat = site_cfg.get("lat")
         site_lon = site_cfg.get("lon")
         site_heading_deg = site_cfg.get("heading_deg", 0.0)
+        report_url = site_cfg.get("report_url", "")
         logger.info(
             "GPS 좌표 변환 활성화 — site lat=%.6f lon=%.6f heading=%.1f° "
             "(사람 확정 시 위경도로 로그에 남김)",
             site_lat, site_lon, site_heading_deg,
         )
+    if report_url:
+        logger.info("낙하 위치 웹 보고 활성화 — 열화상 확정 시 보정 좌표를 %s로 POST", report_url)
 
     controller = ServoController(
         servo,
@@ -131,6 +135,7 @@ def main() -> None:
         site_lat=site_lat,
         site_lon=site_lon,
         site_heading_deg=site_heading_deg,
+        report_url=report_url,
     )
 
     logger.info("ARDA Servo 시작 — UDP %s:%d 수신 대기", udp_cfg["host"], udp_cfg["port"])

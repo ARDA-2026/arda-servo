@@ -8,7 +8,7 @@ from .receiver import Coord, CoordReceiver
 from .servo import PanServo
 from .site import local_to_latlon
 from .thermal_receiver import ThermalPan, ThermalPanReceiver
-from .utils import get_logger
+from .utils import get_logger, send_fall_report
 
 logger = get_logger(__name__)
 
@@ -45,6 +45,13 @@ class ServoController:
     `site_lat`/`site_lon`/`site_heading_deg`로 변환하면 arda-radar의 GPS
     로그와 그대로 비교할 수 있다.
 
+    `report_url`이 함께 주어지면(그리고 `site_lat`/`site_lon`으로 위경도
+    변환이 가능하면), 열화상 확정(`pan.confirmed`) 시 이 열화상 추적 후
+    보정 좌표를 `send_fall_report()`로 그 URL에 POST한다 — arda-radar가
+    처음 감지한 대략적인 좌표가 아니라, 여기서 계산한 최종 보정 좌표가
+    나간다(레이더 최초 감지 좌표를 아는 쪽은 arda-radar이지만, 그 좌표를
+    열화상 추적으로 보정한 최종 값을 아는 쪽은 이 클래스뿐이기 때문이다).
+
     arda-radar가 낙하마다 신뢰도(`Coord.confidence`, 0~1)를 함께 보내는데,
     dwell 중 지금 쫓는 후보보다 confidence가 더 높은 새 낙하 좌표가 오면
     진행 중이던 추적을 버리고 그 즉시 새 좌표로 재조준해 dwell을 처음부터
@@ -76,6 +83,7 @@ class ServoController:
         site_lat: float | None = None,
         site_lon: float | None = None,
         site_heading_deg: float = 0.0,
+        report_url: str | None = None,
     ):
         self._servo = servo
         self._receiver = receiver
@@ -93,6 +101,7 @@ class ServoController:
         self._site_lat = site_lat
         self._site_lon = site_lon
         self._site_heading_deg = site_heading_deg
+        self._report_url = report_url
         # 현재 dwell을 시작시킨 레이더 원좌표와 그 confidence — 전자는 열화상이
         # confirmed를 보낼 때 최종 각도(및 가능하면 거리)를 좌표로 역산해 이
         # 값과 비교 로그를 남기기 위함, 후자는 더 높은 확률의 새 낙하 후보가
@@ -292,7 +301,12 @@ class ServoController:
             if coord is not None:
                 range_m, range_note = self._resolve_range(coord, pan.vertical_offset)
                 orig_position = self._describe_xy(coord.x, coord.y)
-                final_position = self._describe_position(final_angle, range_m)
+                final_x, final_y = pan_angle_to_xyz(
+                    final_angle, range_m,
+                    center_deg=self._center_deg, invert=self._invert,
+                    offset_x=self._offset_x, offset_y=self._offset_y,
+                )
+                final_position = self._describe_xy(final_x, final_y)
                 position_word = "위치" if self._site_lat is not None else "좌표"
                 logger.warning(
                     "열화상 사람 확정 — 레이더 원%s %s → 열화상 추적 후 %s %s "
@@ -300,6 +314,25 @@ class ServoController:
                     position_word, orig_position, position_word, final_position,
                     range_m, range_note, final_angle,
                 )
+
+                # 레이더 최초 감지 좌표가 아니라, 여기서 방금 계산한 열화상 추적
+                # 후 보정 좌표(final_x, final_y)를 report_url로 보낸다 —
+                # arda-radar는 더 이상 이 보고를 하지 않는다(main.py 참고).
+                if self._report_url:
+                    final_latlon = self._resolve_latlon(final_x, final_y)
+                    if final_latlon is not None:
+                        final_lat, final_lon = final_latlon
+                        sent = send_fall_report(self._report_url, final_lat, final_lon)
+                        logger.info(
+                            "%s — 보정 좌표 lat=%.6f lon=%.6f -> %s",
+                            "낙하 위치 보고 전송됨" if sent else "낙하 위치 보고 전송 실패",
+                            final_lat, final_lon, self._report_url,
+                        )
+                    else:
+                        logger.warning(
+                            "report_url이 설정됐지만 site.lat/site.lon이 없어 "
+                            "위경도로 변환할 수 없음 — 보고 전송 생략"
+                        )
             else:
                 logger.warning(
                     "열화상 사람 확정 — 레이더 원좌표 없음, 각도 %.1f°에서 정지, 레이더 트리거 재개",
@@ -338,10 +371,20 @@ class ServoController:
             logger.warning("거리 역산 실패(%s) — 레이더 원거리로 대체", e)
             return radar_range_m, "레이더 원거리로 대체"
 
+    def _resolve_latlon(self, x: float, y: float) -> tuple[float, float] | None:
+        """로컬 (x, y)를 site_lat/site_lon이 설정돼 있으면 위경도로 변환해
+        반환하고, 없으면 None(로컬 좌표만 있고 GPS 변환은 불가능하다는 뜻).
+        report_url 전송에 실제로 쓸 숫자 좌표가 필요할 때 이걸 쓴다 —
+        `_describe_xy()`는 로그용 문자열만 주기 때문에 따로 뺐다."""
+        if self._site_lat is None or self._site_lon is None:
+            return None
+        return local_to_latlon(x, y, self._site_lat, self._site_lon, self._site_heading_deg)
+
     def _describe_xy(self, x: float, y: float) -> str:
         """로컬 (x, y)를 site 설정이 있으면 위경도, 없으면 로컬 좌표 문자열로 변환함."""
-        if self._site_lat is not None and self._site_lon is not None:
-            lat, lon = local_to_latlon(x, y, self._site_lat, self._site_lon, self._site_heading_deg)
+        latlon = self._resolve_latlon(x, y)
+        if latlon is not None:
+            lat, lon = latlon
             return f"lat={lat:.6f} lon={lon:.6f}"
         return f"x={x:.2f} y={y:.2f}"
 

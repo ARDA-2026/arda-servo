@@ -69,3 +69,13 @@ site:
   lat: 37.5336        # 설치 지점 위도 (도, WGS84)
   lon: 126.9364        # 설치 지점 경도 (도, WGS84)
   heading_deg: 140.0    # 레이더 정면(Y축)이 향하는 나침반 방위각
+
+  # 열화상 추적으로 보정된 최종 낙하 위치를 이 엔드포인트로 POST한다
+  # (arda_servo/utils/web_report.py의 send_fall_report 참고, arda-radar의
+  # send_fall_report와 동일한 payload — arda-algo_general의 POST /report에
+  # 맞춰서 쓴다). arda-radar는 더 이상 이 전송을 하지 않으므로, arda-radar의
+  # config/settings.yaml site.report_url과 반드시 같은 값으로 맞춰둘 것 —
+  # 다르면 낙하 확정 보고가 안 가거나 엉뚱한 곳으로 간다. 빈 문자열이면
+  # 전송하지 않는다(로그만 남김). 아래 값은 arda-radar의 config/settings.yaml
+  # site.report_url과 지금 동일하게 맞춰둔 값이다.
+  report_url: "http://172.30.139.191:8000/report"

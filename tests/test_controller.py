@@ -597,6 +597,99 @@ def test_thermal_confirmed_without_site_config_falls_back_to_local_xy(caplog):
     assert "lat=" not in caplog.text
 
 
+def test_thermal_confirmed_sends_corrected_coordinate_via_report_url():
+    # report_url이 설정돼 있으면, 열화상 확정 시 레이더 최초 좌표(1,1)가
+    # 아니라 열화상 추적으로 이동한 최종 각도(140°)에서 역산한 보정 좌표가
+    # send_fall_report()로 전송돼야 한다.
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0), None])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.5, ts=0.0),               # 추적 중 각도가 더 움직임 (135° → 140°)
+        ThermalPan(offset=0.0, ts=0.0, confirmed=True),
+    ])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal, thermal_pan_gain_deg=10.0,
+        site_lat=37.5, site_lon=127.0, site_heading_deg=0.0,
+        report_url="http://example.invalid/report",
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()  # 낙하 좌표 수신 → angle=135.0
+
+    with patch("arda_servo.controller.time.time", return_value=101.0):
+        controller.step()  # 열화상 보정 → angle=140.0
+
+    with patch("arda_servo.controller.send_fall_report") as mock_send:
+        mock_send.return_value = True
+        with patch("arda_servo.controller.time.time", return_value=102.0):
+            controller.step()  # confirmed 수신
+
+    assert mock_send.call_count == 1
+    sent_url, sent_lat, sent_lon = mock_send.call_args[0]
+    assert sent_url == "http://example.invalid/report"
+
+    orig_lat, orig_lon = local_to_latlon(1.0, 1.0, 37.5, 127.0, 0.0)
+    range_m = math.hypot(1.0, 1.0)
+    final_x, final_y = pan_angle_to_xyz(140.0, range_m, center_deg=90.0)
+    expected_lat, expected_lon = local_to_latlon(final_x, final_y, 37.5, 127.0, 0.0)
+
+    assert (sent_lat, sent_lon) != (orig_lat, orig_lon)  # 원좌표 그대로면 안 됨
+    assert sent_lat == expected_lat
+    assert sent_lon == expected_lon
+
+
+def test_thermal_confirmed_without_report_url_does_not_send():
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0)])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.0, ts=0.0, confirmed=True),
+    ])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal,
+        site_lat=37.5, site_lon=127.0,
+        # report_url 미설정(기본 None) — 웹 전송 없이 로그만 남아야 함
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()
+
+    with patch("arda_servo.controller.send_fall_report") as mock_send:
+        with patch("arda_servo.controller.time.time", return_value=101.0):
+            controller.step()
+
+    mock_send.assert_not_called()
+
+
+def test_thermal_confirmed_with_report_url_but_no_site_config_skips_send(caplog):
+    servo = PanServo(pin=33, simulate=True)
+    receiver = FakeReceiver([Coord(x=1.0, y=1.0, z=0.0, fall=True, ts=0.0)])
+    thermal = FakeThermalReceiver([
+        None,
+        ThermalPan(offset=0.0, ts=0.0, confirmed=True),
+    ])
+    controller = ServoController(
+        servo, receiver, center_deg=90.0, dwell_seconds=10.0,
+        thermal_receiver=thermal,
+        report_url="http://example.invalid/report",
+        # site_lat/site_lon 미설정 — 위경도 변환이 안 되니 전송할 수 없다
+    )
+
+    with patch("arda_servo.controller.time.time", return_value=100.0):
+        controller.step()
+
+    with patch("arda_servo.controller.send_fall_report") as mock_send:
+        with caplog.at_level("WARNING"):
+            with patch("arda_servo.controller.time.time", return_value=101.0):
+                controller.step()
+
+    mock_send.assert_not_called()
+    assert "위경도로 변환할 수 없음" in caplog.text
+
+
 def test_run_forever_closes_thermal_receiver():
     servo = PanServo(pin=33, simulate=True)
     thermal = FakeThermalReceiver([])
