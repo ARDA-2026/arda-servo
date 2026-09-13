@@ -11,7 +11,10 @@ servo:
                          # 1회만 이동하는 초기 위치. 이후로는 dwell이 끝나도 이
                          # 각도로 돌아가지 않는다 — 서보는 트리거가 있을 때만
                          # 움직이고, 그 외에는 항상 마지막 각도에 그대로 멈춘다.
-  invert: false          # 배선/장착 방향에 따라 좌우가 반대로 움직이면 true로 변경
+  invert: false           # 배선/장착 방향에 따라 좌우가 반대로 움직이면 true로 변경 —
+                         # 실치 재설치로 서보 방향이 앞뒤(좌우)로 뒤집혀서 true로 전환.
+                         # xyz_to_pan_angle/pan_angle_to_xyz(레이더 좌표→각도)와
+                         # _apply_thermal_pan(열화상 보정 방향) 양쪽 다 이 값 하나로 뒤집힘.
   dwell_seconds: 10.0    # 낙하(fall=true) 좌표 수신 시 그 각도에서 정지해 있을 시간(초).
                          # 끝나도 홈으로 복귀하지 않고 그 각도에 그대로 멈춘다.
                          # 열화상(arda-thermal-test) 판정 시간을 벌어주는 용도 —
@@ -57,8 +60,12 @@ camera_geometry:
                                       # 낮으면 음수, 높으면 양수 — install_height_m =
                                       # radar_height_m + height_offset_from_radar_m
   tilt_deg: 50.0          # 수평 기준 아래로 기울어진 각도(도) — 프레임 세로 중심(정지 상태)의 앙각
-  vertical_fov_deg: 35.0  # MLX90640 Standard 렌즈의 수직 화각(도) — README에 55°(수평)만 명시돼
-                           # 있어 Melexis/Pimoroni 공식 사양(55°x35°)의 35°를 사용함
+  vertical_fov_deg: 55.0  # MLX90640 Standard 렌즈 화각(55°x35°) 중 지금 세로축에 해당하는 값.
+                           # 열화상 하우징이 원래 방향에서 시계방향으로 90도 돌아가 장착돼
+                           # 가로/세로 화각이 서로 바뀌었다 — 원래는 세로가 35°(좁은 축)였지만
+                           # 지금은 55°(넓은 축)가 세로가 됐다(thermal-camera의 WIDTH/HEIGHT
+                           # 회전 보정, thermal_main.py의 ROTATE_90_CCW 참고). 카메라를 원래
+                           # 방향으로 재장착하면 35.0으로 되돌릴 것.
 
 # 레이더 설치 지점의 GPS 위도/경도와 정면 방위각. 사람 확정(confirmed) 시
 # 좌표를 로컬 미터 대신 위경도로 로그에 남기기 위한 설정이다. arda-radar와
@@ -68,7 +75,7 @@ camera_geometry:
 site:
   lat: 37.5336        # 설치 지점 위도 (도, WGS84)
   lon: 126.9364        # 설치 지점 경도 (도, WGS84)
-  heading_deg: 140.0    # 레이더 정면(Y축)이 향하는 나침반 방위각
+  heading_deg: 320.0    # 레이더 정면(Y축)이 향하는 나침반 방위각
 
   # 열화상 추적으로 보정된 최종 낙하 위치를 이 엔드포인트로 POST한다
   # (arda_servo/utils/web_report.py의 send_fall_report 참고, arda-radar의
