@@ -27,7 +27,10 @@ arda-radar (센서 읽기 → 낙하 감지) --UDP JSON--> arda-servo (좌표 �
 3. `arda-servo`가 낙하 좌표를 받으면 `azimuth = atan2(x, y)`로 수평 각도를
    구해 서보 가동 범위(`min_deg` ~ `max_deg`)로 clamp한 뒤 그 각도로
    이동한다.
-4. 그 각도에서 `dwell_seconds`(기본 3초) 동안 정지한다 — 레이더의 낙하
+4. 그 각도에서 `dwell_seconds`(기본 10초 — `config/settings.yaml`에 값이
+   없을 때 코드가 쓰는 기본값. `ServoController.__init__()` 자체의 기본값은
+   3초지만, 저장소가 제공하는 `config/settings.yaml`에는 항상 `10.0`이
+   채워져 있으므로 실제로 적용되는 값은 10초다) 동안 정지한다 — 레이더의 낙하
    판정이 노이즈로 계속 반복돼도 서보가 흔들리지 않고, 서보(및 거기 달린
    열화상 카메라)가 같은 지점을 충분히 오래 봐서 사람인지 판정할 시간을
    벌어준다. dwell 중 들어오는 좌표는 기본적으로 무시하지만, `confidence`가
@@ -74,6 +77,28 @@ z=0 평면(지면/수면)을 보고 있다"는 가정으로 거리를 다시 계
 방식과 맞춘 것이다(`arda_servo/site.py`의 `local_to_latlon()`, `arda-radar`의
 `arda/utils/site.py`와 동일한 변환식을 그대로 복사해서 씀). `site`가 없으면
 기존처럼 레이더 기준 로컬 좌표(m)로 남는다.
+
+### 웹 전송 (`site.report_url`)
+
+열화상까지 확인을 마쳐 "사람"으로 최종 확정된 낙하만(레이더 낙하 판단,
+열화상 관찰/기각 같은 중간 과정은 로그로만 남고 전송하지 않음)
+[`send_fall_report()`](arda_servo/utils/web_report.py)가 아래 최소 포맷
+JSON을 `site.report_url`로 POST한다. 전송되는 좌표는 레이더가 처음 감지한
+대략적인 좌표가 아니라, 여기(`ServoController._end_tracking()`)에서 열화상
+추적으로 보정을 마친 최종 좌표다 — 그 보정 값을 아는 곳이 이 클래스뿐이기
+때문에 웹 전송 책임도 `arda-radar`가 아니라 이 저장소가 진다.
+
+```json
+{"lat": 37.5336, "lon": 126.9364, "timestamp": "2026-08-07T15:32:10.123456+09:00"}
+```
+
+`timestamp`는 한국시간(KST, UTC+9) ISO8601이다. `report_url`이 빈
+문자열(기본값)이거나 `site.lat`/`site.lon`이 없어 위경도로 변환할 수
+없으면 전송하지 않는다 — 실제 서버 주소가 정해지면 `config/settings.yaml`에
+채워 넣을 것. 전송 실패(네트워크 오류, 타임아웃)는 예외를 던지지 않고
+경고 로그만 남기므로 dwell/추적 루프가 멈추지 않는다. `arda-raset`으로
+통합 실행하는 경우에는 이 값 대신 `arda-raset/main.py`의
+`DEFAULT_REPORT_URL`(또는 `--report-url`)이 쓰인다.
 
 좌표계는 레이더 ROI 기준: `x`는 좌우(+가 우측, m), `y`는 센서 정면 거리(m).
 `z`(높이)는 현재 팬 1축 제어에는 사용하지 않는다 — 상하(tilt) 축을
@@ -176,6 +201,7 @@ uv run python main.py
 | `camera_geometry.vertical_fov_deg` | 열화상 센서의 수직 화각(도) — 사람 확정 시 거리 역산에 사용, 섹션을 지우면 레이더 원거리를 그대로 씀 |
 | `site.lat` / `site.lon` | 레이더 설치 지점의 GPS 위도/경도. `arda-radar`의 `site.lat`/`site.lon`과 같은 값으로 수동으로 맞춰둘 것 |
 | `site.heading_deg` | 레이더 정면(Y축)이 향하는 나침반 방위각. `arda-radar`의 `site.heading_deg`와 같은 값. 섹션을 지우면 사람 확정 로그가 위경도 대신 레이더 기준 로컬 좌표(m)로 남음 |
+| `site.report_url` | 사람 확정 시 열화상 추적으로 보정한 최종 좌표를 POST할 주소 ("웹 전송" 절 참고). 빈 문자열이면 전송하지 않음. `arda-raset`으로 실행할 때는 무시되고 그쪽의 `DEFAULT_REPORT_URL`/`--report-url`이 대신 쓰임 |
 
 ## 테스트
 
